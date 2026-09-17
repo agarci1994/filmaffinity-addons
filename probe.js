@@ -1,52 +1,49 @@
 'use strict';
 
 /**
- * Uso: node scripts/probe.js "Título de la película" 2018
+ * Uso: node probe.js
+ *      node probe.js "término de búsqueda"
  *
  * Corre esto UNA VEZ con conexión real a filmaffinity.com antes de
- * confiar en resolve.js/reviews.js en producción. Imprime cuántos
- * candidatos encuentra el matching y cuántas reseñas extrae de cada
- * tipo, para pillar rápido si algún selector se ha quedado desfasado.
+ * confiar en el addon en producción. Sin argumentos, prueba el Top y
+ * construye la ficha completa de la primera película (con reseñas
+ * incluidas). Con un argumento, prueba la búsqueda con ese término.
  */
-const { resolveFilmAffinityId } = require('../src/filmaffinity/resolve');
-const { getProfessionalReviews, getUserReviews } = require('../src/filmaffinity/reviews');
+const { getTopMovies, searchMovies } = require('./catalog');
+const { getFullMeta } = require('./filmaffinity');
 
 async function main() {
-  const title = process.argv[2];
-  const year = process.argv[3] ? Number(process.argv[3]) : undefined;
+  const query = process.argv[2];
 
-  if (!title) {
-    console.error('Uso: node scripts/probe.js "Título" [año]');
-    process.exit(1);
-  }
-
-  console.log(`\n→ Resolviendo "${title}" (${year || 'sin año'})...`);
-  const match = await resolveFilmAffinityId(title, year);
-
-  if (!match) {
-    console.log('✗ No se encontró ningún candidato. Revisa SEARCH_RESULT_SELECTOR en resolve.js.');
+  if (query) {
+    console.log(`\n→ Buscando "${query}"...`);
+    const results = await searchMovies(query);
+    console.log(`  ${results.length} resultados`);
+    results.slice(0, 5).forEach((r) => console.log(`  - [${r.id}] ${r.title} (${r.year ?? '?'})`));
+    if (results.length === 0) {
+      console.log('⚠ Cero resultados: revisa el selector de search.php en catalog.js (searchMovies).');
+    }
     return;
   }
 
-  console.log(`✓ Match: ${match.title} (${match.year}) — id ${match.id} — score ${match.score.toFixed(2)}`);
-  console.log(`  ${match.url}`);
+  console.log('\n→ Top FilmAffinity...');
+  const top = await getTopMovies({ limit: 10 });
+  console.log(`  ${top.length} películas`);
+  top.forEach((m) =>
+    console.log(
+      `  #${m.id} ${m.title} (${m.year ?? '?'}) — ${m.rating ?? '?'}/10 — dir: ${m.director.join(', ') || '?'} — póster: ${m.poster ? 'sí' : 'no'}`
+    )
+  );
 
-  console.log('\n→ Críticas profesionales...');
-  const professional = await getProfessionalReviews(match.id, 2);
-  console.log(`  ${professional.length} extraídas`);
-  professional.forEach((r, i) => console.log(`  [${i + 1}] ${r.outlet}: "${r.excerpt.slice(0, 80)}..."`));
-
-  console.log('\n→ Críticas de usuario...');
-  const user = await getUserReviews(match.id, 2);
-  console.log(`  ${user.length} extraídas`);
-  user.forEach((r, i) => console.log(`  [${i + 1}] ${r.username} (${r.score ?? '?'}/10): "${r.excerpt.slice(0, 80)}..."`));
-
-  if (professional.length === 0) {
-    console.log('\n⚠ Cero críticas profesionales: revisa el selector de tabla en getProfessionalReviews.');
+  if (top.length === 0) {
+    console.log('⚠ Top vacío: revisa chunkByFilmId/parseRankingEntry en catalog.js.');
+    return;
   }
-  if (user.length === 0) {
-    console.log('⚠ Cero críticas de usuario: revisa el troceado por userratings.php en getUserReviews.');
-  }
+
+  const first = top[0];
+  console.log(`\n→ Ficha completa de "${first.title}" (id ${first.id})...`);
+  const meta = await getFullMeta(first.id, first);
+  console.log(JSON.stringify(meta, null, 2));
 }
 
 main().catch((err) => {

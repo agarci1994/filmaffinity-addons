@@ -1,79 +1,74 @@
-# Enriquecimiento de FilmAffinity para tu addon de Stremio
+# Addon de Stremio: FilmAffinity
 
-Añade a la `description` y a `links` del meta object 2 extractos de
-crítica profesional + 2 de usuario, con enlace a la reseña completa.
+Addon de Stremio centrado enteramente en FilmAffinity: catálogo con el
+Top de películas mejor valoradas (con buscador), y en cada ficha, la
+sinopsis y el póster reales más 2 extractos de crítica profesional y 2
+de usuarios, cada uno con enlace a la reseña completa.
 
-## Instalación
+No depende de ningún otro catálogo ni indexado externo — todos los
+datos (título, año, póster, sinopsis, nota, director, reparto,
+críticas) vienen de FilmAffinity.
+
+## Instalación y arranque
 
 ```
-npm install cheerio node-fetch@2
+npm install
+npm start
 ```
 
-(sin más dependencias — la similitud de títulos usa una función propia
-en `similarity.js`, sin librerías externas ni deprecadas)
+Esto expone `http://localhost:7000/manifest.json`, instalable en
+Stremio (Addons → pegar la URL del manifest).
+
+## Estructura
+
+- `http.js` — cliente HTTP compartido (User-Agent identificable, base URL)
+- `catalog.js` — Top de FilmAffinity (`ranking.php?rn=ranking_fa_movies`) y buscador (`search.php`)
+- `movie.js` — título/póster/sinopsis de una película vía etiquetas Open Graph
+- `reviews.js` — 2 extractos de crítica profesional + 2 de usuario por película
+- `format-meta.js` — construye el bloque de reseñas para `description`/`links`
+- `filmaffinity.js` — junta todo lo anterior en la ficha (meta object) completa de una película
+- `cache.js` — cache mínima en disco (JSON), evita repetir peticiones a FA
+- `index.js` — entrypoint: `addonBuilder` + `serveHTTP`, catálogo y ficha
+- `probe.js` — script de calibración contra la red real (ver más abajo)
 
 ## Paso 0 — calibrar antes de confiar en esto
 
-Dos partes del scraper **no las he podido verificar contra el HTML real**
-porque mi entorno no tiene salida de red hacia filmaffinity.com:
-
-1. El selector de resultados del buscador (`resolve.js`)
-2. El troceado de bloques de reseña de usuario (`reviews.js`)
-
-Todo lo demás sí está confirmado en vivo (la tabla de críticas
-profesionales, las URLs, el hecho de que las reseñas de usuario vienen
-completas y no recortadas). Antes de usar esto en producción, corre:
+Todo el scraping se probó hoy contra el HTML real de FilmAffinity
+**excepto la página de búsqueda** (`search.php`), cuyo selector de
+resultados es best-effort sin confirmar en vivo. Antes de depender de
+esto en producción:
 
 ```
-node scripts/probe.js "Título de una película que sepas que tiene críticas" 2020
+node probe.js                  # prueba el Top + la ficha completa de la 1ª película
+node probe.js "algún título"   # prueba el buscador
 ```
 
-Si algo sale a 0, el propio script te dice qué archivo y qué parte
-revisar. Es un ajuste de 5-10 minutos con las devtools abiertas sobre
-una ficha real, no un rediseño.
+Si el Top sale vacío o sin director/reparto, revisa
+`chunkByFilmId`/`parseRankingEntry` en `catalog.js`. Si el buscador
+sale vacío, revisa el selector en `searchMovies` (mismo fichero).
 
-## Integración con tu `defineMetaHandler`
+**Aviso:** desde el entorno donde se escribió este código, FilmAffinity
+devuelve 403 en todas las peticiones (probablemente bloquea el rango
+de IPs de ese entorno) — no es un fallo de la lógica, es un bloqueo de
+red específico de ese entorno. Pruébalo desde tu máquina o desde donde
+despliegues.
 
-```js
-const { enrichMetaWithFilmAffinity } = require('./src/filmaffinity');
+## Cómo se construye el catálogo
 
-builder.defineMetaHandler(async ({ type, id }) => {
-  const item = await getYourCatalogItem(id); // lo que ya tienes
-  let meta = buildYourBaseMeta(item);         // lo que ya tienes
+`getTopMovies()` scrapea la lista del Top (título, año, nota, director,
+reparto), y busca el póster de cada película en paralelo (concurrencia
+de 5, no 30 peticiones de golpe) porque la vista de lista no lo trae.
+Todo el resultado se cachea 3 días, y cada película por separado otros
+7 días (`hint:<id>`) para que `defineMetaHandler` no tenga que volver a
+sacar nota/director/reparto al abrir la ficha.
 
-  meta = await enrichMetaWithFilmAffinity(meta, {
-    title: item.title,
-    year: item.year,
-  });
-
-  return { meta };
-});
-```
-
-Nunca lanza excepción hacia afuera: si el matching falla o FA cambia
-el HTML, `meta` vuelve tal cual, sin la sección de FilmAffinity.
-
-## Mejor uso: en tu indexado por lotes, no en caliente
-
-Como ya comentamos, lo ideal es llamar a `enrichMetaWithFilmAffinity`
-(o directamente a `resolveFilmAffinityId` + `getProfessionalReviews` +
-`getUserReviews`) en el mismo proceso donde indexas los foros, y
-guardar el resultado junto al resto del registro. Así el
-`defineMetaHandler` de arriba solo necesita leer de tu base de datos,
-no golpear FA en cada apertura de ficha. La cache en disco
-(`cache.js`) ya evita el peor caso, pero un precómputo es más rápido
-y más respetuoso con FA.
-
-## Aviso sobre los extractos
+## Aviso sobre los extractos de reseñas
 
 La propia página de críticas profesionales de FilmAffinity indica que
 los derechos de esas críticas son de los medios/críticos originales.
-Por diseño, este código:
-
-- nunca amplía el extracto que FA ya recorta (profesionales),
-- trunca a ~260 caracteres las de usuario (que en origen vienen
-  completas, no recortadas),
-- siempre añade el enlace a la fuente en `links`.
+Por diseño, este código nunca amplía el extracto que FA ya recorta
+(profesionales), trunca a ~260 caracteres las de usuario (que en
+origen vienen completas), y siempre añade el enlace a la fuente.
 
 Para uso personal el riesgo práctico es bajo; si en algún momento
 distribuyes el addon más ampliamente, merece la pena revisar los

@@ -71,7 +71,7 @@ async function getProfessionalReviews(faId, limit = 2) {
  * como frontera el enlace al perfil de usuario, que sí es un patrón de
  * URL estable: /es/userratings.php?user_id=NNN. Es más tosco que un
  * selector fino, pero no depende de nada que no se pueda verificar.
- * Ver scripts/probe-user-reviews.js para calibrar/ajustar esto en 2 min.
+ * Ver probe.js para calibrar/ajustar esto en 2 min.
  */
 async function getUserReviews(faId, limit = 2) {
   const html = await fetchHtml(`/es/reviews/1/${faId}.html`);
