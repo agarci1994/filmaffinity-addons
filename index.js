@@ -23,14 +23,17 @@ const manifest = {
       extra: [{ name: 'search' }],
     },
   ],
-  idPrefixes: ['fa:'],
+  // 'tt' (no 'fa:'): el catálogo usa ids reales de IMDb para que sea
+  // la MISMA ficha que reconocen AIOStream y AIOMetadata, no una
+  // entrada aparte. Ver filmaffinity.js para el porqué.
+  idPrefixes: ['tt'],
 };
 
 const builder = new addonBuilder(manifest);
 
 function toCatalogMeta(movie) {
   return {
-    id: `fa:${movie.id}`,
+    id: movie.imdbId,
     type: 'movie',
     name: movie.title,
     poster: movie.poster || undefined,
@@ -51,11 +54,16 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
 });
 
 builder.defineMetaHandler(async ({ type, id }) => {
-  if (type !== 'movie' || !id.startsWith('fa:')) return { meta: null };
+  if (type !== 'movie' || !id.startsWith('tt')) return { meta: null };
 
-  const faId = id.slice('fa:'.length);
-  const hint = (await cache.get(`hint:${faId}`)) || {};
-  const meta = await getFullMeta(faId, hint, cache);
+  // Solo tenemos algo que aportar si esta película pasó por nuestro
+  // catálogo (Top o búsqueda) y quedó su "pista" (id de FA + datos) en
+  // cache. Para cualquier otro tt-id, no respondemos — así no
+  // sustituimos la ficha de Cinemeta/AIOMetadata con una vacía.
+  const hint = await cache.get(`hint:${id}`);
+  if (!hint) return { meta: null };
+
+  const meta = await getFullMeta({ faId: hint.faId, imdbId: id, hint, cache });
   return { meta };
 });
 

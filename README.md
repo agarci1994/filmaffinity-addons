@@ -1,20 +1,46 @@
 # Addon de Stremio: FilmAffinity
 
-Addon de Stremio centrado enteramente en FilmAffinity: catálogo con el
-Top de películas mejor valoradas (con buscador), y en cada ficha, la
-sinopsis y el póster reales más 2 extractos de crítica profesional y 2
-de usuarios, cada uno con enlace a la reseña completa.
+Addon centrado en FilmAffinity: catálogo con el Top de películas mejor
+valoradas (con buscador), y en cada ficha, sinopsis y póster reales
+más 2 extractos de crítica profesional y 2 de usuarios, cada uno con
+enlace a la reseña completa.
 
-No depende de ningún otro catálogo ni indexado externo — todos los
-datos (título, año, póster, sinopsis, nota, director, reparto,
-críticas) vienen de FilmAffinity.
+El catálogo usa **ids reales de IMDb** (no un id inventado), para que
+sea la misma ficha que ya reconocen AIOStream y AIOMetadata — no una
+entrada aparte y desconectada. Esto significa que **AIOStream sí te
+dará streams** en las películas de este catálogo. Lo que no puede
+garantizar ningún addon por su cuenta: cuando dos addons responden a
+la ficha del mismo id, Stremio se queda con el de mayor prioridad en
+tu lista de addons, no los combina campo a campo — así que si
+AIOMetadata está por delante en tu lista, verás su ficha (más rica
+visualmente) sin nuestras reseñas; si pones este addon por delante,
+verás las reseñas pero perderás lo que aporta AIOMetadata. Es una
+limitación de la plataforma, no de este addon: ni AIOMetadata ni
+Bingecat ofrecen una forma de añadir un addon propio como fuente de
+metadatos (sus proveedores son una lista fija).
 
 ## Instalación y arranque
 
 ```
 npm install
+```
+
+Necesitas una clave gratuita de OMDb (para pasar de título/año de FA a
+id de IMDb): sácala en https://www.omdbapi.com/apikey.aspx (plan
+gratuito, 1.000 peticiones/día — de sobra, porque el Top se cachea 3
+días y solo se resuelve una vez por ventana de cache) y expórtala:
+
+```
+export OMDB_API_KEY=tu_clave
 npm start
 ```
+
+En Render/Beamup/etc., añade `OMDB_API_KEY` como variable de entorno
+del servicio en vez de exportarla a mano.
+
+Sin esa clave, el catálogo sale vacío: cada película se descarta si no
+se le encuentra id de IMDb (a propósito — mejor vacío que colar ids
+inventados que no le sirven a AIOStream/AIOMetadata).
 
 Esto expone `http://localhost:7000/manifest.json`, instalable en
 Stremio (Addons → pegar la URL del manifest).
@@ -22,45 +48,31 @@ Stremio (Addons → pegar la URL del manifest).
 ## Estructura
 
 - `http.js` — cliente HTTP compartido (User-Agent identificable, base URL)
-- `catalog.js` — Top de FilmAffinity (`ranking.php?rn=ranking_fa_movies`) y buscador (`search.php`)
+- `catalog.js` — Top de FilmAffinity (`ranking.php?rn=ranking_fa_movies`) y buscador (`search.php`), con resolución de id de IMDb
+- `imdb.js` — título/año de FA → id de IMDb, vía OMDb
 - `movie.js` — título/póster/sinopsis de una película vía etiquetas Open Graph
-- `reviews.js` — 2 extractos de crítica profesional + 2 de usuario por película
-- `format-meta.js` — construye el bloque de reseñas para `description`/`links`
-- `filmaffinity.js` — junta todo lo anterior en la ficha (meta object) completa de una película
-- `cache.js` — cache mínima en disco (JSON), evita repetir peticiones a FA
-- `index.js` — entrypoint: `addonBuilder` + `serveHTTP`, catálogo y ficha
+- `reviews.js` — 2 extractos de crítica profesional + 2 de usuario por película (por id de FA)
+- `format-meta.js` — construye el bloque de reseñas (con jerarquía visual) para `description`/`links`
+- `filmaffinity.js` — junta todo lo anterior en la ficha completa; separa el id de FA (para scrapear) del id de IMDb (para Stremio)
+- `cache.js` — cache mínima en disco (JSON), evita repetir peticiones a FA/OMDb
+- `index.js` — entrypoint: `addonBuilder` + `serveHTTP`, catálogo y ficha con `idPrefixes: ['tt']`
 - `probe.js` — script de calibración contra la red real (ver más abajo)
 
 ## Paso 0 — calibrar antes de confiar en esto
 
-Todo el scraping se probó hoy contra el HTML real de FilmAffinity
+Todo el scraping de FilmAffinity se probó contra el HTML real
 **excepto la página de búsqueda** (`search.php`), cuyo selector de
-resultados es best-effort sin confirmar en vivo. Antes de depender de
-esto en producción:
+resultados es best-effort sin confirmar en vivo. Con `OMDB_API_KEY`
+configurada:
 
 ```
-node probe.js                  # prueba el Top + la ficha completa de la 1ª película
-node probe.js "algún título"   # prueba el buscador
+node probe.js                  # Top + ficha completa de la 1ª película, con id de IMDb
+node probe.js "algún título"   # buscador
 ```
 
-Si el Top sale vacío o sin director/reparto, revisa
-`chunkByFilmId`/`parseRankingEntry` en `catalog.js`. Si el buscador
-sale vacío, revisa el selector en `searchMovies` (mismo fichero).
-
-**Aviso:** desde el entorno donde se escribió este código, FilmAffinity
-devuelve 403 en todas las peticiones (probablemente bloquea el rango
-de IPs de ese entorno) — no es un fallo de la lógica, es un bloqueo de
-red específico de ese entorno. Pruébalo desde tu máquina o desde donde
-despliegues.
-
-## Cómo se construye el catálogo
-
-`getTopMovies()` scrapea la lista del Top (título, año, nota, director,
-reparto), y busca el póster de cada película en paralelo (concurrencia
-de 5, no 30 peticiones de golpe) porque la vista de lista no lo trae.
-Todo el resultado se cachea 3 días, y cada película por separado otros
-7 días (`hint:<id>`) para que `defineMetaHandler` no tenga que volver a
-sacar nota/director/reparto al abrir la ficha.
+Si el Top sale vacío, primero descarta que sea la clave de OMDb (el
+propio script te avisa si falta). Si sale vacío incluso con la clave
+puesta, revisa `chunkByFilmId`/`parseRankingEntry` en `catalog.js`.
 
 ## Aviso sobre los extractos de reseñas
 

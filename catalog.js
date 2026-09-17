@@ -3,6 +3,7 @@
 const cheerio = require('cheerio');
 const { fetchHtml, BASE_URL } = require('./http');
 const { getMovieDetails } = require('./movie');
+const { getImdbId, hasOmdbKey } = require('./imdb');
 const { createFileCache } = require('./cache');
 
 const defaultCache = createFileCache();
@@ -99,7 +100,7 @@ function parseRankingEntry(chunk) {
   const director = people.length > 3 ? people.slice(0, people.length - 3) : [];
   const cast = people.length > 3 ? people.slice(-3) : people;
 
-  return { id: chunk.id, title, year, rating, director, cast };
+  return { faId: chunk.id, title, year, rating, director, cast };
 }
 
 async function getTopMovies({ limit = 30, cache = defaultCache } = {}) {
@@ -111,21 +112,41 @@ async function getTopMovies({ limit = 30, cache = defaultCache } = {}) {
   const chunks = chunkByFilmId(html).slice(0, limit);
   const entries = chunks.map(parseRankingEntry).filter((m) => m.title);
 
-  // Póster: no viene en esta vista de lista (ver nota más arriba), así
-  // que se busca aparte con concurrencia limitada — una sola vez por
-  // ventana de cache, no en cada visita al catálogo.
-  const posters = await mapWithConcurrency(entries, 5, async (entry) => {
-    const details = await getMovieDetails(entry.id);
-    return details.poster;
+  if (!hasOmdbKey()) {
+    console.warn(
+      '[filmaffinity] OMDB_API_KEY no configurada: el catálogo no tendrá id de IMDb, ' +
+        'así que AIOStream no encontrará streams para estas películas.'
+    );
+  }
+
+  // Póster (no viene en esta vista de lista, ver nota más arriba) e id
+  // de IMDb (para que el catálogo hable el mismo idioma que AIOStream)
+  // se buscan juntos, en paralelo y con concurrencia limitada — una
+  // sola vez por ventana de cache, no en cada visita al catálogo.
+  const extras = await mapWithConcurrency(entries, 5, async (entry) => {
+    const [details, imdbId] = await Promise.all([
+      getMovieDetails(entry.faId),
+      getImdbId(entry.title, entry.year),
+    ]);
+    return { poster: details.poster, imdbId };
   });
 
-  const movies = entries.map((entry, i) => ({ ...entry, poster: posters[i] || null }));
+  // Sin id de IMDb no hay forma de que AIOStream/AIOMetadata reconozcan
+  // la película como la misma ficha, así que se descarta del catálogo
+  // en vez de colarla con un id inventado que no le sirve a nadie más.
+  const movies = entries
+    .map((entry, i) => ({
+      ...entry,
+      poster: (extras[i] && extras[i].poster) || null,
+      imdbId: (extras[i] && extras[i].imdbId) || null,
+    }))
+    .filter((m) => m.imdbId);
 
-  // Guarda también una "pista" individual por película (nota, director,
-  // reparto, póster) para que defineMetaHandler no tenga que volver a
-  // sacarlos cuando el usuario abra la ficha.
+  // Guarda una "pista" por película (nota, director, reparto, póster,
+  // id de FA) indexada por id de IMDb — es la clave que usará
+  // defineMetaHandler cuando Stremio le pregunte por ese tt-id.
   for (const movie of movies) {
-    await cache.set(`hint:${movie.id}`, movie, { ttlDays: 7 });
+    await cache.set(`hint:${movie.imdbId}`, movie, { ttlDays: 7 });
   }
 
   await cache.set(cacheKey, movies, { ttlDays: 3 });
@@ -145,10 +166,10 @@ async function searchMovies(query, { limit = 20 } = {}) {
   const html = await fetchHtml(`/es/search.php?stext=${encodeURIComponent(query)}&stype=title`);
   const $ = cheerio.load(html);
   const seen = new Set();
-  const results = [];
+  const candidates = [];
 
   $('a[href*="/es/film"][href$=".html"]').each((_, el) => {
-    if (results.length >= limit) return;
+    if (candidates.length >= limit) return;
     const $el = $(el);
     const href = $el.attr('href') || '';
     const idMatch = href.match(/film(\d+)\.html/);
@@ -161,14 +182,18 @@ async function searchMovies(query, { limit = 20 } = {}) {
     const container = $el.closest('div, li, tr');
     const yearMatch = container.text().match(/\b(1[89]\d{2}|20\d{2})\b/);
 
-    results.push({
-      id: idMatch[1],
+    candidates.push({
+      faId: idMatch[1],
       title,
       year: yearMatch ? Number(yearMatch[0]) : null,
     });
   });
 
-  return results;
+  const imdbIds = await mapWithConcurrency(candidates, 5, (c) => getImdbId(c.title, c.year));
+
+  return candidates
+    .map((c, i) => ({ ...c, imdbId: imdbIds[i] || null }))
+    .filter((c) => c.imdbId);
 }
 
 module.exports = { getTopMovies, searchMovies, BASE_URL };
