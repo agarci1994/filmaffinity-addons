@@ -119,15 +119,14 @@ async function getTopMovies({ limit = 30, cache = defaultCache } = {}) {
     );
   }
 
-  // Póster (no viene en esta vista de lista, ver nota más arriba) e id
-  // de IMDb (para que el catálogo hable el mismo idioma que AIOStream)
-  // se buscan juntos, en paralelo y con concurrencia limitada — una
-  // sola vez por ventana de cache, no en cada visita al catálogo.
+  // Póster e id de IMDb se buscan juntos, en paralelo y con
+  // concurrencia limitada — una sola vez por ventana de cache. Ojo:
+  // para OMDb hay que usar el título ORIGINAL (movie.js lo saca de la
+  // ficha técnica), no el título en español que muestra el Top — "El
+  // padrino" no existe en OMDb, "The Godfather" sí.
   const extras = await mapWithConcurrency(entries, 5, async (entry) => {
-    const [details, imdbId] = await Promise.all([
-      getMovieDetails(entry.faId),
-      getImdbId(entry.title, entry.year),
-    ]);
+    const details = await getMovieDetails(entry.faId);
+    const imdbId = await getImdbId(details.originalTitle || entry.title, details.year || entry.year);
     return { poster: details.poster, imdbId };
   });
 
@@ -189,10 +188,18 @@ async function searchMovies(query, { limit = 20 } = {}) {
     });
   });
 
-  const imdbIds = await mapWithConcurrency(candidates, 5, (c) => getImdbId(c.title, c.year));
+  const extras = await mapWithConcurrency(candidates, 5, async (c) => {
+    const details = await getMovieDetails(c.faId);
+    const imdbId = await getImdbId(details.originalTitle || c.title, details.year || c.year);
+    return { poster: details.poster, imdbId };
+  });
 
   return candidates
-    .map((c, i) => ({ ...c, imdbId: imdbIds[i] || null }))
+    .map((c, i) => ({
+      ...c,
+      poster: (extras[i] && extras[i].poster) || null,
+      imdbId: (extras[i] && extras[i].imdbId) || null,
+    }))
     .filter((c) => c.imdbId);
 }
 
